@@ -5,7 +5,7 @@ import folium
 import random
 from src.environment.map_downloader import download_graph, download_boundaries
 from src.environment.graph_enricher import enrich_graph
-from src.utils.visualizer import visualize_graph_static
+from src.utils.visualizer import visualize_graph_static, add_animated_path
 from src.ai.pathfinding import find_path_astar
 from src.roles import ArmyRole, RescuerRole, VolunteerRole
 from src.ai.mission_narrator import generate_briefing
@@ -159,6 +159,10 @@ boundaries = load_boundaries(lat, lon)
 # Pathfinding State
 if "path_coords" not in st.session_state:
     st.session_state["path_coords"] = None
+if "animate_path" not in st.session_state:
+    st.session_state["animate_path"] = False
+if "animation_speed" not in st.session_state:
+    st.session_state["animation_speed"] = 50
 
 if G:
     # Navigation Controls
@@ -305,6 +309,25 @@ if G:
             # Simple metric: number of segments
             st.info(f"Route Segments: {len(st.session_state['path_coords'])}")
             st.caption(f"Role: {selected_role.name}")
+            
+            # Animation Controls
+            st.markdown("---")
+            st.markdown("### Path Animation")
+            st.session_state["animate_path"] = st.checkbox(
+                "🎬 Animate Path", 
+                value=st.session_state["animate_path"],
+                help="Visualize the agent moving along the calculated path"
+            )
+            
+            if st.session_state["animate_path"]:
+                st.session_state["animation_speed"] = st.slider(
+                    "Animation Speed",
+                    min_value=10,
+                    max_value=200,
+                    value=st.session_state["animation_speed"],
+                    step=10,
+                    help="Lower values = faster animation"
+                )
 
         # Display some edge data
         st.subheader("Intel Feed")
@@ -326,6 +349,15 @@ if G:
             st.session_state["path_coords"],
             path_color=selected_role.path_color,
         )
+        
+        # Add animation if enabled and path exists
+        if st.session_state["path_coords"] and st.session_state["animate_path"]:
+            m = add_animated_path(
+                m, 
+                st.session_state["path_coords"],
+                path_color=selected_role.path_color,
+                speed=st.session_state["animation_speed"]
+            )
 
         # Add preview markers if locations selected but no path yet
         if m and not st.session_state["path_coords"]:

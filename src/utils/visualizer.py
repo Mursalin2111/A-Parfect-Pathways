@@ -1,6 +1,127 @@
 import osmnx as ox
 import folium
 import os
+import json
+
+
+def add_animated_path(m, path_coords, path_color="#FF4B4B", speed=50):
+    """
+    Adds an animated marker moving along the path with a visual trail.
+    
+    Args:
+        m (folium.Map): The folium map object.
+        path_coords (list): List of (lat, lon) tuples.
+        path_color (str): Hex color for the path.
+        speed (int): Animation speed in milliseconds per segment (lower = faster).
+    """
+    if not path_coords or len(path_coords) < 2:
+        return m
+    
+    # Convert path_coords to JSON for JavaScript
+    path_json = json.dumps(path_coords)
+    
+    # Create the animated path JavaScript
+    animation_js = f"""
+    <script>
+        let pathCoords = {path_json};
+        let currentIndex = 0;
+        let animationMarker = null;
+        let polylineTrail = null;
+        let trailCoords = [];
+        let animationRunning = true;
+        
+        function initializeAnimation() {{
+            if (!window.map) return;
+            
+            // Remove existing marker and trail
+            if (animationMarker) {{ window.map.removeLayer(animationMarker); }}
+            if (polylineTrail) {{ window.map.removeLayer(polylineTrail); }}
+            
+            currentIndex = 0;
+            trailCoords = [];
+            animationMarker = L.marker(pathCoords[0], {{
+                icon: L.icon({{
+                    iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-orange.png',
+                    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                    iconSize: [25, 41],
+                    iconAnchor: [12, 41],
+                    popupAnchor: [1, -34],
+                    shadowSize: [41, 41]
+                }}),
+                title: 'Agent in Motion'
+            }}).addTo(window.map);
+            
+            // Start animation loop
+            animateMarker();
+        }}
+        
+        function animateMarker() {{
+            if (!animationRunning || currentIndex >= pathCoords.length) {{
+                if (currentIndex >= pathCoords.length) {{
+                    animationRunning = false;
+                }}
+                return;
+            }}
+            
+            if (currentIndex > 0) {{
+                // Update marker position
+                animationMarker.setLatLng(pathCoords[currentIndex]);
+                
+                // Add to trail
+                trailCoords.push(pathCoords[currentIndex]);
+                
+                // Remove old trail if too long
+                if (trailCoords.length > 30) {{
+                    trailCoords.shift();
+                }}
+                
+                // Update trail visualization
+                if (polylineTrail) {{ window.map.removeLayer(polylineTrail); }}
+                if (trailCoords.length > 1) {{
+                    polylineTrail = L.polyline(trailCoords, {{
+                        color: '{path_color}',
+                        weight: 4,
+                        opacity: 0.6,
+                        dashArray: '5, 5',
+                        lineCap: 'round',
+                        lineJoin: 'round'
+                    }}).addTo(window.map);
+                }}
+            }}
+            
+            currentIndex++;
+            
+            // Continue animation
+            setTimeout(animateMarker, {speed});
+        }}
+        
+        // Wait for map to be ready
+        if (document.readyState === 'loading') {{
+            document.addEventListener('DOMContentLoaded', () => {{
+                setTimeout(() => {{
+                    window.map = Object.values(window)[Object.keys(window).find(k => 
+                        typeof window[k] === 'object' && window[k]._container && 
+                        window[k]._zoom !== undefined
+                    )] || null;
+                    if (window.map) {{ initializeAnimation(); }}
+                }}, 500);
+            }});
+        }} else {{
+            setTimeout(() => {{
+                window.map = Object.values(window)[Object.keys(window).find(k => 
+                    typeof window[k] === 'object' && window[k]._container && 
+                    window[k]._zoom !== undefined
+                )] || null;
+                if (window.map) {{ initializeAnimation(); }}
+            }}, 500);
+        }}
+    </script>
+    """
+    
+    # Inject JavaScript into the map
+    m.get_root().html.add_child(folium.Element(animation_js))
+    
+    return m
 
 
 # 1. Add color parameter with a default
