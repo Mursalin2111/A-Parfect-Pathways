@@ -61,3 +61,9 @@ logs/
 .cache/
 cache/
 *.cache
+
+# Project specific ignores
+A-Parfect-Pathway/
+.agents/
+outputs/*.html
+

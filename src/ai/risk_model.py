@@ -1,28 +1,59 @@
+import os
 import random
 import numpy as np
+import pandas as pd
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 
 class RiskModel:
     """
-    Predicts the risk level (0.0 to 1.0) of a road segment based on its features.
+    Advanced ML Risk Prediction Engine for Road Networks.
 
-    Features used:
-    - highway_type_rank: (1=cycleway/path to 5=motorway)
-    - maxspeed: Speed limit
-    - lanes: Number of lanes
-    - length: Length of segment
-    - bridge/tunnel: Boolean flags
+    Supported algorithms:
+    - random_forest (default)
+    - gradient_boosting
+    - logistic
+
+    Features evaluated per road segment:
+    1. highway_type_rank: (0=footway to 5=motorway)
+    2. maxspeed: Speed limit (km/h)
+    3. lanes: Number of lanes
+    4. length: Road segment length (meters)
+    5. is_bridge: Flag for bridges (1/0)
+    6. is_tunnel: Flag for tunnels (1/0)
+    7. weather_factor: Weather risk multiplier (1.0 - 2.0)
+    8. time_factor: Time-of-day risk multiplier (1.0 - 1.8)
     """
 
-    def __init__(self):
-        self.model = LogisticRegression()
+    FEATURE_NAMES = [
+        "Highway Rank",
+        "Max Speed",
+        "Lanes",
+        "Segment Length",
+        "Is Bridge",
+        "Is Tunnel",
+        "Weather Impact",
+        "Time Impact",
+    ]
+
+    def __init__(self, model_type="random_forest"):
+        self.model_type = model_type
         self.scaler = StandardScaler()
         self.is_trained = False
+        self.metrics = {}
+        self.feature_importances = {}
 
-        # Mapping highway types to a numeric rank (Heuristic)
-        # Higher rank = potentially faster/busier/more crucial
+        if model_type == "random_forest":
+            self.model = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
+        elif model_type == "gradient_boosting":
+            self.model = GradientBoostingClassifier(n_estimators=100, learning_rate=0.1, random_state=42)
+        else:
+            self.model = LogisticRegression(random_state=42)
+
         self.highway_ranks = {
             "motorway": 5,
             "trunk": 5,
@@ -38,17 +69,13 @@ class RiskModel:
             "path": 0,
         }
 
-    def _extract_features(self, edge_data):
-        """
-        Extracts a feature vector from an edge's OSM data.
-        """
-        # Feature 1: Highway Rank
+    def _extract_features(self, edge_data, weather_factor=1.0, time_factor=1.0):
+        """Extracts an 8-dimensional feature vector from an edge's attributes."""
         highway = edge_data.get("highway", "residential")
         if isinstance(highway, list):
             highway = highway[0]
-        rank = self.highway_ranks.get(highway, 2)
+        rank = float(self.highway_ranks.get(highway, 2))
 
-        # Feature 2: Maxspeed
         maxspeed = edge_data.get("maxspeed", 30)
         try:
             if isinstance(maxspeed, list):
@@ -58,7 +85,6 @@ class RiskModel:
         except (ValueError, TypeError):
             maxspeed = 30.0
 
-        # Feature 3: Lanes
         lanes = edge_data.get("lanes", 1)
         try:
             if isinstance(lanes, list):
@@ -68,67 +94,103 @@ class RiskModel:
         except (ValueError, TypeError):
             lanes = 1.0
 
-        # Feature 4: Length
         length = float(edge_data.get("length", 50.0))
-
-        # Feature 5: Is Bridge/Tunnel
         is_bridge = 1.0 if "bridge" in edge_data else 0.0
         is_tunnel = 1.0 if "tunnel" in edge_data else 0.0
 
-        return [rank, maxspeed, lanes, length, is_bridge, is_tunnel]
+        return [
+            rank,
+            maxspeed,
+            lanes,
+            length,
+            is_bridge,
+            is_tunnel,
+            float(weather_factor),
+            float(time_factor),
+        ]
 
-    def train_on_synthetic_data(self):
+    def train(self, dataset_size=1500):
         """
-        Trains the model on synthetic 'intel' to establish a baseline behavior.
+        Trains the ML model using structured multi-feature risk distribution.
+        Evaluates performance on a test split.
         """
         if self.is_trained:
             return
 
-        X = []
-        y = []
+        X, y = [], []
 
-        # Generate 1000 synthetic samples
-        for _ in range(1000):
-            # Simulated Features
+        for _ in range(dataset_size):
             rank = random.randint(0, 5)
-            maxspeed = random.choice([30, 40, 60, 80])
-            lanes = random.randint(1, 4)
-            length = random.uniform(20, 500)
-            bridge = 0
-            tunnel = 0
+            maxspeed = float(random.choice([30, 40, 50, 60, 80, 100]))
+            lanes = float(random.randint(1, 4))
+            length = random.uniform(10.0, 600.0)
+            bridge = float(random.choice([0, 0, 0, 1]))
+            tunnel = float(random.choice([0, 0, 0, 1]))
+            weather = random.choice([1.0, 1.2, 1.5, 1.8])
+            time_fac = random.choice([1.0, 1.3, 1.6])
 
-            # Logic for "Ground Truth": Main roads (high rank/speed) are "risky" (1) in this scenario (e.g., enemy checkpoints)
-            # Small paths are "safe" (0)
-            risk_prob = 0.1
+            # Ground truth risk probability function
+            risk_score = 0.05
             if rank >= 4:
-                risk_prob += 0.6
+                risk_score += 0.35
             if maxspeed >= 60:
-                risk_prob += 0.2
+                risk_score += 0.25
+            if bridge or tunnel:
+                risk_score += 0.15
+            risk_score *= (weather * time_fac * 0.5)
 
-            label = 1 if random.random() < risk_prob else 0
+            label = 1 if (risk_score > 0.45 or random.random() < risk_score) else 0
 
-            X.append([rank, maxspeed, lanes, length, bridge, tunnel])
+            X.append([rank, maxspeed, lanes, length, bridge, tunnel, weather, time_fac])
             y.append(label)
 
         X = np.array(X)
         y = np.array(y)
 
-        self.scaler.fit(X)
-        X_scaled = self.scaler.transform(X)
-        self.model.fit(X_scaled, y)
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.25, random_state=42, stratify=y
+        )
+
+        self.scaler.fit(X_train)
+        X_train_scaled = self.scaler.transform(X_train)
+        X_test_scaled = self.scaler.transform(X_test)
+
+        self.model.fit(X_train_scaled, y_train)
+        y_pred = self.model.predict(X_test_scaled)
+
+        # Store evaluation metrics
+        self.metrics = {
+            "Accuracy": round(accuracy_score(y_test, y_pred) * 100, 2),
+            "Precision": round(precision_score(y_test, y_pred, zero_division=0) * 100, 2),
+            "Recall": round(recall_score(y_test, y_pred, zero_division=0) * 100, 2),
+            "F1-Score": round(f1_score(y_test, y_pred, zero_division=0) * 100, 2),
+        }
+
+        # Store Feature Importances if available
+        if hasattr(self.model, "feature_importances_"):
+            importances = self.model.feature_importances_
+            self.feature_importances = dict(
+                zip(self.FEATURE_NAMES, [round(float(imp), 4) for imp in importances])
+            )
+        elif hasattr(self.model, "coef_"):
+            coefs = np.abs(self.model.coef_[0])
+            norm_coefs = coefs / np.sum(coefs)
+            self.feature_importances = dict(
+                zip(self.FEATURE_NAMES, [round(float(c), 4) for c in norm_coefs])
+            )
+
         self.is_trained = True
-        print("Risk Model trained on synthetic data.")
 
-    def predict_risk(self, edge_data):
-        """
-        Returns a risk probability (0.0 - 1.0) for a single edge.
-        """
+    def predict_risk(self, edge_data, weather_factor=1.0, time_factor=1.0):
+        """Returns risk probability (0.0 to 1.0) for a given edge."""
         if not self.is_trained:
-            self.train_on_synthetic_data()
+            self.train()
 
-        features = np.array(self._extract_features(edge_data)).reshape(1, -1)
+        features = np.array(
+            self._extract_features(edge_data, weather_factor, time_factor)
+        ).reshape(1, -1)
         features_scaled = self.scaler.transform(features)
 
-        # Get probability of class 1 (High Risk)
         prob = self.model.predict_proba(features_scaled)[0][1]
-        return round(prob, 2)
+        return round(float(prob), 2)
+

@@ -5,16 +5,19 @@ import folium
 import random
 from src.environment.map_downloader import download_graph, download_boundaries
 from src.environment.graph_enricher import enrich_graph
+from src.environment.danger_clusterer import discover_danger_clusters
 from src.utils.visualizer import visualize_graph_static, add_animated_path
 from src.ai.pathfinding import find_path_astar
 from src.roles import ArmyRole, RescuerRole, VolunteerRole
 from src.ai.mission_narrator import generate_briefing
-from config import MAP_CENTER_LAT, MAP_CENTER_LON, MAP_DEFAULT_RADIUS
+from config import MAP_CENTER_LAT, MAP_CENTER_LON, MAP_DEFAULT_RADIUS, ENEMY_ZONES
 
 st.set_page_config(page_title="A Perfect Pathway", layout="wide")
 
-st.title("A Perfect Pathway - Simulation Environment")
-st.markdown("Real-world street network enriched with **AI-driven risk prediction**.")
+st.title("A Perfect Pathway - AI & ML Simulation Environment")
+st.markdown(
+    "Real-world street network enriched with **Multi-Algorithm Machine Learning & DBSCAN Hazard Clustering**."
+)
 
 
 def local_css(file_name):
@@ -34,6 +37,42 @@ lon = st.sidebar.number_input("Center Longitude", value=MAP_CENTER_LON, format="
 radius = st.sidebar.slider("Radius (meters)", 500, 5000, MAP_DEFAULT_RADIUS)
 st.sidebar.markdown("---")
 
+st.sidebar.header("🤖 Machine Learning Engine")
+ml_model_name = st.sidebar.selectbox(
+    "Risk ML Model",
+    ["Random Forest", "Gradient Boosting", "Logistic Regression"],
+    index=0,
+    help="Select the classification algorithm used to predict road segment danger levels.",
+)
+model_type_map = {
+    "Random Forest": "random_forest",
+    "Gradient Boosting": "gradient_boosting",
+    "Logistic Regression": "logistic",
+}
+model_type_key = model_type_map[ml_model_name]
+
+weather_opt = st.sidebar.selectbox(
+    "Weather Condition",
+    ["Clear (1.0x)", "Rain (1.3x)", "Heavy Fog (1.6x)"],
+    index=0,
+)
+weather_val = 1.0 if "Clear" in weather_opt else (1.3 if "Rain" in weather_opt else 1.6)
+
+time_opt = st.sidebar.selectbox(
+    "Time of Day",
+    ["Daytime (1.0x)", "Nighttime (1.4x)"],
+    index=0,
+)
+time_val = 1.0 if "Daytime" in time_opt else 1.4
+
+hazard_mode = st.sidebar.radio(
+    "Danger Zone Detection",
+    ["Dynamic ML Clusters (DBSCAN)", "Preset Config Zones"],
+    index=0,
+    help="DBSCAN automatically clusters spatial incident data into dynamic danger zones.",
+)
+st.sidebar.markdown("---")
+
 st.sidebar.header("Role Selection")
 
 # Initialize roles
@@ -49,14 +88,19 @@ st.sidebar.caption(selected_role.description)
 
 
 @st.cache_resource
-def load_and_enrich_graph(lat, lon, radius):
-    """Downloads and enriches the graph. Cached to avoid re-downloading."""
+def load_and_enrich_graph(lat, lon, radius, model_type_key, weather_val, time_val):
+    """Downloads and enriches the graph using ML Risk Engine."""
     location = (lat, lon)
     G = download_graph(location=location, dist=radius)
     if G:
-        G = enrich_graph(G)
-        return G
-    return None
+        G, risk_model = enrich_graph(
+            G,
+            model_type=model_type_key,
+            weather_factor=weather_val,
+            time_factor=time_val,
+        )
+        return G, risk_model
+    return None, None
 
 
 @st.cache_resource
@@ -64,13 +108,15 @@ def load_boundaries(lat, lon):
     return download_boundaries(location=(lat, lon))
 
 
-def get_map(_G, _boundaries, lat, lon, radius, path_coords=None, path_color="#FF4B4B"):
-    """
-    Generates the folium map object.
-    Not cached to allow dynamic path updates.
-    """
-    from config import ENEMY_ZONES
+@st.cache_data
+def get_danger_zones(lat, lon, radius, mode):
+    if mode == "Dynamic ML Clusters (DBSCAN)":
+        return discover_danger_clusters(lat, lon, radius)
+    return ENEMY_ZONES
 
+
+def get_map(_G, _boundaries, lat, lon, radius, danger_zones, path_coords=None, path_color="#FF4B4B"):
+    """Generates the folium map object."""
     m = visualize_graph_static(
         _G,
         filename="outputs/streamlit_map.html",
@@ -78,8 +124,9 @@ def get_map(_G, _boundaries, lat, lon, radius, path_coords=None, path_color="#FF
         boundaries_gdf=_boundaries,
         center_coords=(lat, lon),
         radius=radius,
-        enemy_zones=ENEMY_ZONES,
+        enemy_zones=danger_zones,
     )
+
 
     if path_coords:
         # Reverse geocode to get place names
@@ -153,8 +200,9 @@ def add_preview_markers(m, _G, start_node, end_node, start_name, end_name):
 
 
 # Main logic
-G = load_and_enrich_graph(lat, lon, radius)
+G, risk_model = load_and_enrich_graph(lat, lon, radius, model_type_key, weather_val, time_val)
 boundaries = load_boundaries(lat, lon)
+danger_zones = get_danger_zones(lat, lon, radius, hazard_mode)
 
 # Pathfinding State
 if "path_coords" not in st.session_state:
@@ -173,79 +221,55 @@ if G:
 
         # Extract unique street names from the graph
         gdf_nodes_temp, gdf_edges_temp = ox.graph_to_gdfs(G)
-        # Get all names, filter for strings only (some are lists)
         all_names = gdf_edges_temp["name"].dropna().tolist()
         street_names = [s for s in all_names if isinstance(s, str)]
         street_names = ["-- Select a Street --"] + sorted(set(street_names))
 
-        # Create a mapping of street names to node IDs
         street_node_map = {}
         for idx, row in gdf_edges_temp.iterrows():
             name = row.get("name")
             if isinstance(name, str) and name not in street_node_map:
-                street_node_map[name] = idx[0]  # idx is (u, v, key)
+                street_node_map[name] = idx[0]
 
-        # Create reverse mapping: node ID -> street name
         node_street_map = {v: k for k, v in street_node_map.items()}
 
-        # Initialize session state for selections
         if "selected_source" not in st.session_state:
             st.session_state["selected_source"] = "-- Select a Street --"
         if "selected_destination" not in st.session_state:
             st.session_state["selected_destination"] = "-- Select a Street --"
 
-        # Source Selection
         source_index = 0
         if st.session_state["selected_source"] in street_names:
             source_index = street_names.index(st.session_state["selected_source"])
-        start_selection = st.selectbox(
-            "Source Street", street_names, index=source_index
-        )
+        start_selection = st.selectbox("Source Street", street_names, index=source_index)
         st.session_state["selected_source"] = start_selection
-        if start_selection == "-- Select a Street --":
-            start_node = None
-        else:
-            start_node = street_node_map.get(start_selection)
+        start_node = None if start_selection == "-- Select a Street --" else street_node_map.get(start_selection)
 
-        # Destination Selection
         dest_index = 0
         if st.session_state["selected_destination"] in street_names:
             dest_index = street_names.index(st.session_state["selected_destination"])
-        end_selection = st.selectbox(
-            "Destination Street", street_names, index=dest_index
-        )
+        end_selection = st.selectbox("Destination Street", street_names, index=dest_index)
         st.session_state["selected_destination"] = end_selection
-        if end_selection == "-- Select a Street --":
-            end_node = None
-        else:
-            end_node = end_selection
+        end_node = end_selection
 
         col_btn1, col_btn2, col_btn3 = st.columns(3)
         with col_btn1:
-            plan_mission = st.button(
-                "Plan Mission", type="primary", use_container_width=True
-            )
+            plan_mission = st.button("Plan Mission", type="primary", use_container_width=True)
         with col_btn2:
             random_mission = st.button("Random", use_container_width=True)
         with col_btn3:
             clear_mission = st.button("Clear", use_container_width=True)
 
-        # Clear Mission Logic
         if clear_mission:
             st.session_state["path_coords"] = None
             st.session_state["selected_source"] = "-- Select a Street --"
             st.session_state["selected_destination"] = "-- Select a Street --"
             st.rerun()
 
-        # Plan Mission Logic
         if plan_mission:
-            # Get actual end_node from street_node_map
             actual_end_node = street_node_map.get(end_selection)
             if start_node and actual_end_node:
-                # Army blocks enemy zones
-                from config import ENEMY_ZONES
-
-                zones_to_block = ENEMY_ZONES if selected_role.name == "Army" else None
+                zones_to_block = danger_zones if selected_role.name == "Army" else None
 
                 with st.spinner("AI calculating optimal path..."):
                     path_nodes, path_coords = find_path_astar(
@@ -263,27 +287,21 @@ if G:
             else:
                 st.warning("Please select both Source and Destination streets.")
 
-        # Random Mission Logic
         if random_mission:
             nodes = list(G.nodes())
             if len(nodes) > 1:
                 start_node = random.choice(nodes)
                 end_node = random.choice(nodes)
 
-                # Find street names for these nodes (if they exist)
                 start_street = node_street_map.get(start_node, None)
                 end_street = node_street_map.get(end_node, None)
 
-                # Update dropdowns if we found matching streets
                 if start_street:
                     st.session_state["selected_source"] = start_street
                 if end_street:
                     st.session_state["selected_destination"] = end_street
 
-                # Army blocks enemy zones
-                from config import ENEMY_ZONES
-
-                zones_to_block = ENEMY_ZONES if selected_role.name == "Army" else None
+                zones_to_block = danger_zones if selected_role.name == "Army" else None
 
                 with st.spinner("AI calculating optimal path..."):
                     path_nodes, path_coords = find_path_astar(
@@ -303,14 +321,30 @@ if G:
 
         st.metric("Nodes", G.number_of_nodes())
         st.metric("Edges", G.number_of_edges())
+        st.caption(f"Active Hazard Zones: {len(danger_zones)} ({hazard_mode})")
+
+        # ML Model Performance Panel
+        if risk_model and hasattr(risk_model, "metrics"):
+            with st.expander("📊 ML Model Performance", expanded=False):
+                st.markdown(f"**Algorithm:** {ml_model_name}")
+                m_col1, m_col2 = st.columns(2)
+                m_col1.metric("Accuracy", f"{risk_model.metrics.get('Accuracy', 0)}%")
+                m_col2.metric("F1 Score", f"{risk_model.metrics.get('F1-Score', 0)}%")
+
+                if hasattr(risk_model, "feature_importances") and risk_model.feature_importances:
+                    st.markdown("**Feature Importances:**")
+                    import pandas as pd
+                    df_imp = pd.DataFrame(
+                        list(risk_model.feature_importances.items()),
+                        columns=["Feature", "Importance"],
+                    ).sort_values(by="Importance", ascending=True)
+                    st.bar_chart(df_imp.set_index("Feature"), horizontal=True)
 
         st.markdown("### Risk Analysis")
         if st.session_state["path_coords"]:
-            # Simple metric: number of segments
             st.info(f"Route Segments: {len(st.session_state['path_coords'])}")
             st.caption(f"Role: {selected_role.name}")
             
-            # Animation Controls
             st.markdown("---")
             st.markdown("### Path Animation")
             st.session_state["animate_path"] = st.checkbox(
@@ -329,7 +363,6 @@ if G:
                     help="Lower values = faster animation"
                 )
 
-        # Display some edge data
         st.subheader("Intel Feed")
         gdf_nodes, gdf_edges = ox.graph_to_gdfs(G)
         if not gdf_edges.empty:
@@ -346,11 +379,11 @@ if G:
             lat,
             lon,
             radius,
+            danger_zones,
             st.session_state["path_coords"],
             path_color=selected_role.path_color,
         )
         
-        # Add animation if enabled and path exists
         if st.session_state["path_coords"] and st.session_state["animate_path"]:
             m = add_animated_path(
                 m, 
@@ -359,7 +392,6 @@ if G:
                 speed=st.session_state["animation_speed"]
             )
 
-        # Add preview markers if locations selected but no path yet
         if m and not st.session_state["path_coords"]:
             add_preview_markers(
                 m,
@@ -381,10 +413,7 @@ if G:
                 returned_objects=[],
             )
 
-            # Auto-generate Mission Briefing when path exists
             if st.session_state["path_coords"]:
-                from config import ENEMY_ZONES
-
                 st.markdown("---")
                 st.subheader("Mission Briefing")
                 briefing = generate_briefing(
@@ -392,16 +421,15 @@ if G:
                     source=st.session_state.get("selected_source", "Unknown"),
                     destination=st.session_state.get("selected_destination", "Unknown"),
                     steps=len(st.session_state["path_coords"]),
-                    danger_zones_count=len(ENEMY_ZONES),
+                    danger_zones_count=len(danger_zones),
                 )
                 if briefing:
                     st.info(briefing)
                 else:
-                    st.warning(
-                        "Mission briefing could not be generated. Proceed with caution."
-                    )
+                    st.warning("Mission briefing could not be generated. Proceed with caution.")
         else:
             st.error("Failed to generate map object.")
 
 else:
     st.error("Could not load the graph. Please check your coordinates or try again.")
+
