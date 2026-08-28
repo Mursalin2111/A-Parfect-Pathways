@@ -158,7 +158,7 @@ def visualize_graph_static(
         m = folium.Map(
             location=[center_y, center_x],
             zoom_start=14,
-            tiles="cartodbpositron",
+            tiles="OpenStreetMap",
             attribution_control=False,
         )
 
